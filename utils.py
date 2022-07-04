@@ -27,3 +27,7 @@ def reshape(l: list, width: int) -> List[list]:
     for i in range(0, len(l), width):
         out.append(l[i : i + width])
     return out
+
+
+def getintlist(config: dict, key: str) -> List:
+    return [int(x) for x in config[key].strip().split(" ")]

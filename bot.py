@@ -2,6 +2,7 @@ import json
 import logging
 from enum import Enum
 from datetime import timedelta
+from typing import List, Optional
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
@@ -26,10 +27,20 @@ class BotState(Enum):
     SELECT_TRIP = 5  # Choose trip to delete
 
 
+class BotProfile:
+    def __init__(self, name: str, allowed_chat_ids: List[int], allowed_user_ids: List[int], interval: int, silent: bool):
+        self.name = name
+        self.allowed_chat_ids = allowed_chat_ids
+        self.allowed_user_ids = allowed_user_ids
+        self.interval = interval
+        self.silent = silent
+
+
 class Bot:
-    def __init__(self, token: str):
+    def __init__(self, token: str, profiles: BotProfile):
         self.init_stations()
         self.init_application(token)
+        self.profiles = profiles
         self.backend = TGVBot(self.application, 600)
 
     def init_stations(self):
@@ -106,10 +117,29 @@ class Bot:
         """
         self.application.run_polling()
 
+    def _get_profile(self, context: ContextTypes.DEFAULT_TYPE) -> Optional[BotProfile]:
+        chat_id = context._chat_id
+        user_id = context._user_id
+        for profile in self.profiles:
+            if chat_id in profile.allowed_chat_ids:
+                logging.debug("Profile found for chat with ID %s: %s", chat_id, profile.name)
+                return profile
+            if user_id in profile.allowed_user_ids:
+                logging.debug("Profile found for user with ID %s: %s", user_id, profile.name)
+                return profile
+        return None
+
+    def _is_authorized(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        return self._get_profile(context) is not None
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Starts the conversation and asks the user what they want to do
         """
+        # TODO: Convert this to an annotation and apply it to all callbacks
+        if not self._is_authorized(context):
+            return ConversationHandler.END
+
         reply_keyboard = [["Start trip", "Delete trip", "List trips", "Cancel"]]
         await update.message.reply_text(
             "Welcome to the TGV Max reservation bot!\n"

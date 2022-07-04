@@ -37,7 +37,15 @@ your bot's token).
 
 ### TGVMaxBot
 
-Finally, you can configure this script by editing the `config.ini` file.
+Finally, you can configure this script by editing the `config.ini` file. Here
+are the available options:
+
+| Key                  | Type   | Description                                                               |
+| -------------------- | ------ | ------------------------------------------------------------------------- |
+| check_interval       | int    | How often to check for new posts (in seconds, default is 3600)            |
+| allowed_chat_ids     | list   | A space separated list of chat IDs in which the bot will answer all users |
+| allowed_user_ids     | list   | A space separated list of yser IDs to which the bot will always answer    |
+| silent_notifications | bool   | Whether to send messages silently (notifications will have no sound)      |
 
 ## Running
 
