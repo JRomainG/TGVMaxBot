@@ -1,0 +1,13 @@
+[Profile name]
+; How often to check if a new image has been uploaded (in seconds)
+check_interval = 3600
+
+; In which chat IDs the bot will accept to create trips, regardless of the user
+allowed_chat_ids = first_chat_id, second_chat_id
+
+; Which users are allowed to create trips, regardless of chat ID
+allowed_user_ids = first_user_id, second_user_id
+
+; Whether to send messages silently: users will receive notifications with no
+; sound if set to True
+silent_notifications = False

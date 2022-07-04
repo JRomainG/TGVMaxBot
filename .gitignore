@@ -1,0 +1,9 @@
+# Python
+__pycache__
+*.pyc
+
+# Config
+*.ini
+
+# Misc
+logo.pxm
