@@ -1,5 +1,5 @@
 [Profile name]
-; How often to check if a new image has been uploaded (in seconds)
+; How often to check if new tickets are available (in seconds)
 check_interval = 3600
 
 ; In which chat IDs the bot will accept to create trips, regardless of the user

@@ -40,12 +40,12 @@ your bot's token).
 Finally, you can configure this script by editing the `config.ini` file. Here
 are the available options:
 
-| Key                  | Type   | Description                                                               |
-| -------------------- | ------ | ------------------------------------------------------------------------- |
-| check_interval       | int    | How often to check for new posts (in seconds, default is 3600)            |
-| allowed_chat_ids     | list   | A space separated list of chat IDs in which the bot will answer all users |
-| allowed_user_ids     | list   | A space separated list of yser IDs to which the bot will always answer    |
-| silent_notifications | bool   | Whether to send messages silently (notifications will have no sound)      |
+| Key                  | Type   | Description                                                                  |
+| -------------------- | ------ | ---------------------------------------------------------------------------- |
+| check_interval       | int    | How often to check if new tickets are available (in seconds, default: 3600)  |
+| allowed_chat_ids     | list   | A space separated list of chat IDs in which the bot will answer all users    |
+| allowed_user_ids     | list   | A space separated list of user IDs to which the bot will always answer       |
+| silent_notifications | bool   | Whether to send messages silently (notifications will have no sound)         |
 
 ## Running
 
@@ -98,3 +98,16 @@ $ systemctl daemon-reload
 $ systemctl enable TGVMaxBot
 $ systemctl start TGVMaxBot
 ```
+
+## Usage
+
+Simply add your bot to a group channel or start sending it messages. Make sure
+to authorize your user ID and/or chat ID in `config.ini` (the `/userid` and
+`/chatid` commands may be useful).
+
+## TODO
+
+* Implement persistence: the bot will forget about all trips after being killed
+* Add date and time picker keyboards
+* Add links to easily book discovered tickets
+* Allow automatically booking discovered trips
