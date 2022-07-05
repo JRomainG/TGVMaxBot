@@ -1,8 +1,8 @@
 import json
 import logging
 from enum import Enum
-from datetime import timedelta
-from typing import List, Optional
+from datetime import datetime, timedelta
+from typing import List, Callable, Optional
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from utils import Requests, reshape
+from utils import Requests, reshape, getlist
 from backend import Trip, TGVBot
 
 
@@ -24,16 +24,34 @@ class BotState(Enum):
     SELECT_DESTINATION = 2  # Choose arrival station
     SELECT_MIN_DATE = 3  # Choose departure earliest target date
     SELECT_MAX_DATE = 4  # Choose departure latest target date
-    SELECT_TRIP = 5  # Choose trip to delete
+    SELECT_MAX_DURATION = 5  # Choose max allowed trip duration
+    SELECT_TRIP = 6  # Choose trip to delete
 
 
 class BotProfile:
-    def __init__(self, name: str, allowed_chat_ids: List[int], allowed_user_ids: List[int], interval: int, silent: bool):
+    def __init__(
+        self,
+        name: str,
+        allowed_chat_ids: List[int],
+        allowed_user_ids: List[int],
+        interval: int,
+        silent: bool,
+    ):
         self.name = name
         self.allowed_chat_ids = allowed_chat_ids
         self.allowed_user_ids = allowed_user_ids
         self.interval = interval
         self.silent = silent
+
+    @staticmethod
+    def from_config(name: str, config: dict) -> "BotProfile":
+        return BotProfile(
+            name=name,
+            allowed_chat_ids=getlist(config, "allowed_chat_ids", int),
+            allowed_user_ids=getlist(config, "allowed_user_ids", int),
+            interval=config.getint("check_interval", 3600),
+            silent=config.getboolean("silent_notifications", False),
+        )
 
 
 class Bot:
@@ -84,10 +102,10 @@ class Bot:
                     MessageHandler(filters.Regex(r"^Cancel$"), self.cancel),
                 ],
                 BotState.SELECT_ORIGIN: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.destination)
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.destination),
                 ],
                 BotState.SELECT_DESTINATION: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.min_date)
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.min_date),
                 ],
                 BotState.SELECT_MIN_DATE: [
                     MessageHandler(
@@ -98,11 +116,18 @@ class Bot:
                 BotState.SELECT_MAX_DATE: [
                     MessageHandler(
                         filters.Regex(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$"),
+                        self.max_duration,
+                    )
+                ],
+                BotState.SELECT_MAX_DURATION: [
+                    MessageHandler(
+                        filters.Regex(r"^\d{2}:\d{2}$"),
                         self.create_trip,
                     )
                 ],
                 BotState.SELECT_TRIP: [
-                    MessageHandler(filters.Regex(r"^\d+$"), self.delete_trip)
+                    MessageHandler(filters.Regex(r"^\d+$"), self.delete_trip),
+                    MessageHandler(filters.Regex(r"^Cancel$"), self.cancel),
                 ],
             },
             fallbacks=[CommandHandler("cancel", self.cancel)],
@@ -110,6 +135,8 @@ class Bot:
             per_chat=True,
         )
         self.application.add_handler(conv_handler)
+        self.application.add_handler(CommandHandler("chatid", self.get_chat_id))
+        self.application.add_handler(CommandHandler("userid", self.get_user_id))
 
     def run(self):
         """
@@ -122,27 +149,34 @@ class Bot:
         user_id = context._user_id
         for profile in self.profiles:
             if chat_id in profile.allowed_chat_ids:
-                logging.debug("Profile found for chat with ID %s: %s", chat_id, profile.name)
+                logging.debug(
+                    "Profile found for chat with ID %s: %s", chat_id, profile.name
+                )
                 return profile
             if user_id in profile.allowed_user_ids:
-                logging.debug("Profile found for user with ID %s: %s", user_id, profile.name)
+                logging.debug(
+                    "Profile found for user with ID %s: %s", user_id, profile.name
+                )
                 return profile
         return None
 
-    def _is_authorized(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        return self._get_profile(context) is not None
+    def check_authorized(func: Callable) -> bool:
+        def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if self._get_profile(context) is not None:
+                return func(self, update, context)
+            else:
+                return ConversationHandler.END
 
+        return wrapper
+
+    @check_authorized
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Starts the conversation and asks the user what they want to do
         """
-        # TODO: Convert this to an annotation and apply it to all callbacks
-        if not self._is_authorized(context):
-            return ConversationHandler.END
-
         reply_keyboard = [["Start trip", "Delete trip", "List trips", "Cancel"]]
         await update.message.reply_text(
-            "Welcome to the TGV Max reservation bot!\n"
+            "Welcome to the TGV Max reservation bot!"
             "You can send /cancel to stop talking to me.\n"
             "What do you want to do?",
             reply_markup=ReplyKeyboardMarkup(
@@ -154,6 +188,7 @@ class Bot:
         )
         return BotState.SETUP
 
+    @check_authorized
     async def origin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Asks the user to choose from which station they should leave
@@ -169,6 +204,7 @@ class Bot:
         )
         return BotState.SELECT_ORIGIN
 
+    @check_authorized
     async def destination(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> int:
@@ -199,6 +235,7 @@ class Bot:
         )
         return BotState.SELECT_DESTINATION
 
+    @check_authorized
     async def min_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Asks the user to choose the earliest acceptable departure date
@@ -227,6 +264,7 @@ class Bot:
             )
             return BotState.SELECT_MIN_DATE
 
+    @check_authorized
     async def max_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Asks the user to choose the latest acceptable departure date
@@ -244,12 +282,12 @@ class Bot:
         )
         return BotState.SELECT_MAX_DATE
 
-    async def create_trip(
+    @check_authorized
+    async def max_duration(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> int:
         """
-        Creates a trip and stores it to later notify the user if tickets are
-        available
+        Asks the user to choose the maximum trip duration they want
         """
         try:
             context.user_data["max_date"] = Trip.parse_date(update.message.text)
@@ -259,15 +297,53 @@ class Bot:
             )
             return BotState.SELECT_MAX_DATE
 
-        if context.user_data["max_date"] < context.user_data["min_date"]:
+        min_date = context.user_data["min_date"]
+        max_date = context.user_data["max_date"]
+        if max_date < min_date:
             await update.message.reply_text(
                 "Latest date must be after earliest date",
             )
             return BotState.SELECT_MAX_DATE
 
+        if (
+            max_date.year != min_date.year
+            or max_date.month != min_date.month
+            or max_date.day != min_date.day
+        ):
+            await update.message.reply_text(
+                "Because of technical limitations in the SNCF API, only same-day trips can be planned",
+            )
+            return BotState.SELECT_MAX_DATE
+
+        if max_date < datetime.now():
+            await update.message.reply_text(
+                "Latest date cannot be in the past",
+            )
+            return BotState.SELECT_MAX_DATE
+
+        await update.message.reply_text(
+            "What is the maximum trip duration that you'll allow? Duration format: HH:MM",
+        )
+        return BotState.SELECT_MAX_DURATION
+
+    @check_authorized
+    async def create_trip(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> int:
+        """
+        Creates a trip and stores it to later notify the user if tickets are
+        available
+        """
         try:
-            d = context.user_data
-            trip = Trip(d["origin"], d["destination"], d["min_date"], d["max_date"])
+            context.user_data["max_duration"] = Trip.parse_duration(update.message.text)
+        except ValueError as e:
+            await update.message.reply_text(
+                "Please enter a valid duration",
+            )
+            return BotState.SELECT_MAX_DURATION
+
+        try:
+            trip = Trip.from_config(context.user_data)
             self.backend.add_trip(context, trip)
             await update.message.reply_text(
                 f"Created {trip}.\nUse /start to list all your existing trips",
@@ -280,6 +356,7 @@ class Bot:
 
         return ConversationHandler.END
 
+    @check_authorized
     async def select_trip(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> int:
@@ -295,10 +372,11 @@ class Bot:
             for trip in trips:
                 msg += f"0: {trip}"
 
+            trip_ids = list(range(len(trips)))
             await update.message.reply_text(
                 msg,
                 reply_markup=ReplyKeyboardMarkup(
-                    reshape(list(range(len(trips))), 5),
+                    reshape(trip_ids, 5) + [["Cancel"]],
                     one_time_keyboard=True,
                     input_field_placeholder="Trip ID",
                     selective=True,
@@ -312,6 +390,7 @@ class Bot:
 
         return BotState.SELECT_TRIP
 
+    @check_authorized
     async def delete_trip(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> int:
@@ -337,6 +416,7 @@ class Bot:
             )
         return ConversationHandler.END
 
+    @check_authorized
     async def list_trips(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> int:
@@ -359,13 +439,24 @@ class Bot:
             )
         return ConversationHandler.END
 
+    @check_authorized
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Cancels and ends the conversation
         """
-        user = update.message.from_user
-        logging.info("User %s canceled the conversation", user.first_name)
         await update.message.reply_text(
             "Conversation canceled, see you later!", reply_markup=ReplyKeyboardRemove()
         )
         return ConversationHandler.END
+
+    async def get_chat_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Sends a message containing the current chat's ID
+        """
+        await update.message.reply_text(f"Current chat ID: {context._chat_id}")
+
+    async def get_user_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Sends a message containing the user's ID
+        """
+        await update.message.reply_text(f"Current user ID: {context._user_id}")

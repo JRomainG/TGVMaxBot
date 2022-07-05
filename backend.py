@@ -3,10 +3,10 @@ import json
 import logging
 import requests
 from typing import List
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
-from telegram.ext import Job, Application, ContextTypes, CallbackContext
+from telegram.ext import Job, Application, ContextTypes
 
 
 class Trip:
@@ -16,12 +16,14 @@ class Trip:
         destination: str,
         min_date: datetime,
         max_date: datetime,
+        max_duration: timedelta,
         job: Job = None,
     ):
         self.origin = origin
         self.destination = destination
         self.min_date = min_date
         self.max_date = max_date
+        self.max_duration = max_duration
         self.job = job
 
     @staticmethod
@@ -31,12 +33,31 @@ class Trip:
         except ValueError:
             return None
 
+    @staticmethod
+    def parse_duration(duration: str) -> timedelta:
+        try:
+            h, m = map(int, duration.split(":"))
+            return timedelta(hours=h, minutes=m)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def from_config(config: dict) -> "Trip":
+        return Trip(
+            config["origin"],
+            config["destination"],
+            config["min_date"],
+            config["max_date"],
+            config["max_duration"],
+        )
+
     def __str__(self) -> str:
-        return "Trip from {} to {} (departure between {} and {})".format(
+        return "Trip from {} to {} (departure between {} and {}) with a max duration of {}".format(
             self.origin,
             self.destination,
             self.min_date.strftime("%Y-%m-%d %H:%M:%S"),
             self.max_date.strftime("%Y-%m-%d %H:%M:%S"),
+            self.max_duration,
         )
 
 
@@ -53,8 +74,8 @@ class Ticket:
     ):
         self.origin = origin
         self.destination = destination
-        self.min_date = departure_time
-        self.max_date = arrival_time
+        self.departure_time = departure_time
+        self.arrival_time = arrival_time
         self.transporter = transporter
         self.train_id = train_id
         self.available_seats = available_seats
@@ -79,8 +100,8 @@ class Ticket:
         return "Ticket from {} to {}, {} - {} ({}), {} seats available".format(
             self.origin,
             self.destination,
-            self.min_date.strftime("%Y-%m-%d %H:%M:%S"),
-            self.max_date.strftime("%Y-%m-%d %H:%M:%S"),
+            self.departure_time.strftime("%Y-%m-%d %H:%M:%S"),
+            self.arrival_time.strftime("%Y-%m-%d %H:%M:%S"),
             self.transporter,
             self.available_seats,
         )
@@ -129,10 +150,10 @@ class GenericBackend(abc.ABC):
         trip.job = self.application.job_queue.run_repeating(
             self.check_trip,
             interval=self.check_interval,
-            first=10,
+            first=1,
             chat_id=chat_id,
             user_id=user_id,
-            name=f"{chat_id}-{user_id}",
+            name=f"{chat_id}.{user_id}",
             data=trip,
         )
         if user_id not in self.trips:
@@ -153,9 +174,17 @@ class GenericBackend(abc.ABC):
         del self.trips[context._user_id][trip_id]
         logging.info("Removed %s for user %d", trip, context._user_id)
 
-    async def check_trip(self, context: CallbackContext):
-        logging.debug("Checking %s for user %d", context.job.data, context._user_id)
-        await self._check_trip(context._user_id, context.job.data)
+    async def check_trip(self, context: ContextTypes.DEFAULT_TYPE):
+        user_id = context._user_id
+        trip = context.job.data
+
+        if trip.max_date < datetime.now():
+            logging.debug("Found expired trip %s", trip)
+            self.remove_trip(context, self.trips[user_id].index(trip))
+            return
+
+        logging.debug("Checking %s for user %d", trip, context._user_id)
+        await self._check_trip(context, trip)
 
     @abc.abstractmethod
     async def _check_trip(self, user_id: int, trip: Trip):
@@ -187,45 +216,65 @@ class TGVBot(GenericBackend):
             logging.warn("[TGVBot] Failed to fetch available tickets: %s", e)
             return []
 
-    def notify_trip(self, ticket: Ticket):
-        message = "TODO"
-        self.transport.send_message(message)
+    async def notify_tickets(
+        self, context: ContextTypes.DEFAULT_TYPE, trip: Trip, tickets: List[Ticket]
+    ):
+        if not tickets:
+            return
+        msg = f"Found {len(tickets)} new option(s) for {trip}:\n"
+        msg += "\n".join([f"- {t}" for t in tickets])
+        await context.bot.send_message(
+            context.job.chat_id, text=msg, disable_web_page_preview=True
+        )
 
-    def _update_notified_tickets(self, tickets: List[Ticket]):
+    def _update_notified_tickets(self, user_id: int, tickets: List[Ticket]):
+        if user_id not in self._notified_tickets:
+            self._notified_tickets[user_id] = []
+            return
+
         for ticket in tickets:
             if ticket.available_seats == 0:
                 # If a ticket has no available seats but was notified in the
                 # past, we want to get a new notification when a seat is
                 # available again, so remove it from _notified_tickets
                 try:
-                    self._notified_tickets.remove(ticket)
+                    self._notified_tickets[user_id].remove(ticket)
                 except ValueError:
                     pass
-            elif ticket not in self._notified_tickets:
-                self._notified_tickets.append(ticket)
+            elif ticket not in self._notified_tickets[user_id]:
+                self._notified_tickets[user_id].append(ticket)
 
         # We don't want the list of notified tickets to grow too large, so
         # remove those with a departure date in the past
-        for ticket in self._notified_tickets:
+        for ticket in self._notified_tickets[user_id]:
             if ticket.departure_time < datetime.now():
-                self._notified_tickets.remove(ticket)
+                self._notified_tickets[user_id].remove(ticket)
 
-    async def _check_trip(self, user_id: int, trip: Trip):
-        # TODO
-        return
-
-        tickets = self.get_available_tickets()
+    async def _check_trip(self, context: ContextTypes.DEFAULT_TYPE, trip: Trip):
+        tickets = self.get_available_tickets(trip)
         available_tickets = [t for t in tickets if t.available_seats > 0]
         logging.debug(
-            "[TGVBot] Found %d ticket(s) (%d with available seats) for %s: %s",
+            "[TGVBot] Found %d ticket(s) (%d with available seats) for %s",
             len(tickets),
             len(available_tickets),
-            self.trip,
+            trip,
         )
 
+        tickets_to_notify = []
         for ticket in available_tickets:
-            # Don't notify for tickets twice
-            if ticket not in self._notified_tickets:
-                self.notify_ticket(ticket)
+            if ticket.departure_time < trip.min_date:
+                continue
+            if ticket.departure_time > trip.max_date:
+                continue
+            if ticket.arrival_time - ticket.departure_time > trip.max_duration:
+                continue
 
-        self._update_notified_tickets(tickets)
+            logging.debug("[TGVBot] Found %s matching user requirements", ticket)
+
+            # Don't notify for tickets twice
+            if ticket not in self._notified_tickets.get(context._user_id, []):
+                tickets_to_notify.append(ticket)
+
+        logging.debug("[TGVBot] Found %d new ticket(s)", len(tickets_to_notify))
+        await self.notify_tickets(context, trip, tickets_to_notify)
+        self._update_notified_tickets(context._user_id, tickets)

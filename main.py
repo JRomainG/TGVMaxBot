@@ -4,7 +4,6 @@ import argparse
 import configparser
 
 from bot import Bot, BotProfile
-from utils import getintlist
 
 
 def main():
@@ -18,12 +17,15 @@ def main():
 
     profiles = []
     for section in config.sections():
-        allowed_chat_ids = getintlist(config[section], "allowed_chat_ids")
-        allowed_user_ids = getintlist(config[section], "allowed_user_ids")
-        interval = config[section].getint("check_interval", 3600)
-        silent = config[section].getboolean("silent_notifications", False)
-        profile = BotProfile(section, allowed_chat_ids, allowed_user_ids, interval, silent)
+        profile = BotProfile.from_config(section, config[section])
+        assert (
+            len(profile.allowed_chat_ids) > 0 or len(profile.allowed_user_ids) > 0
+        ), ValueError("Profile must have at least one allowed chat ID or user ID")
         profiles.append(profile)
+
+    assert len(profiles) > 0, ValueError(
+        "At least one profile must be defined in config.ini"
+    )
 
     # Create a bot with this info
     bot = Bot(auth_config["Telegram"]["token"], profiles)

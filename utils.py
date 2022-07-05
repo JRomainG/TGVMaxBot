@@ -1,5 +1,5 @@
 import requests
-from typing import List
+from typing import Any, List
 
 
 class Requests:
@@ -29,5 +29,8 @@ def reshape(l: list, width: int) -> List[list]:
     return out
 
 
-def getintlist(config: dict, key: str) -> List:
-    return [int(x) for x in config[key].strip().split(" ")]
+def getlist(config: dict, key: str, obj_type: Any = str) -> List:
+    array_string = config[key].strip()
+    if not array_string:
+        return []
+    return [obj_type(x) for x in array_string.split(" ")]
