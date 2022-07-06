@@ -423,9 +423,9 @@ class Bot:
             if not trips:
                 raise KeyError("No trips")
 
-            msg = "Select a trip:\n"
-            for trip in trips:
-                msg += f"0: {trip}"
+            msg = "Select a trip:"
+            for i, trip in enumerate(trips):
+                msg += f"\n{i}: {trip}"
 
             trip_ids = list(range(len(trips)))
             await update.message.reply_text(
@@ -483,9 +483,9 @@ class Bot:
             if not trips:
                 raise KeyError("No trips")
 
-            msg = "Your trips:\n"
+            msg = "Your trips:"
             for trip in trips:
-                msg += f"- {trip}"
+                msg += f"\n- {trip}"
 
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
         except KeyError:
