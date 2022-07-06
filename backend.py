@@ -213,7 +213,7 @@ class TGVBot(GenericBackend):
             data = json.loads(self._get(url))
             return [Ticket.from_json(t) for t in data]
         except Exception as e:
-            logging.warn("[TGVBot] Failed to fetch available tickets: %s", e)
+            logging.warning("[TGVBot] Failed to fetch available tickets: %s", e)
             return []
 
     async def notify_tickets(

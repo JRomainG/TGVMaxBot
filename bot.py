@@ -4,7 +4,7 @@ from enum import Enum
 from datetime import datetime, timedelta
 from typing import List, Callable, Optional
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, ForceReply
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -121,7 +121,7 @@ class Bot:
                 ],
                 BotState.SELECT_MAX_DURATION: [
                     MessageHandler(
-                        filters.Regex(r"^\d{2}:\d{2}$"),
+                        filters.Regex(r"^\d+:\d{2}$"),
                         self.create_trip,
                     )
                 ],
@@ -176,8 +176,7 @@ class Bot:
         """
         reply_keyboard = [["Start trip", "Delete trip", "List trips", "Cancel"]]
         await update.message.reply_text(
-            "Welcome to the TGV Max reservation bot!"
-            "You can send /cancel to stop talking to me.\n"
+            "Welcome to the TGV Max reservation bot! You can send /cancel to stop talking to me.\n"
             "What do you want to do?",
             reply_markup=ReplyKeyboardMarkup(
                 reply_keyboard,
@@ -188,13 +187,11 @@ class Bot:
         )
         return BotState.SETUP
 
-    @check_authorized
-    async def origin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """
-        Asks the user to choose from which station they should leave
-        """
+    async def _send_origin_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, message: str
+    ):
         await update.message.reply_text(
-            "From where do you want to leave?",
+            message,
             reply_markup=ReplyKeyboardMarkup(
                 self._origin_keyboard,
                 one_time_keyboard=True,
@@ -202,7 +199,29 @@ class Bot:
                 selective=True,
             ),
         )
+
+    @check_authorized
+    async def origin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """
+        Asks the user to choose from which station they should leave
+        """
+        await self._send_origin_message(
+            update, context, "From where do you want to leave?"
+        )
         return BotState.SELECT_ORIGIN
+
+    async def _send_destination_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, message: str
+    ):
+        await update.message.reply_text(
+            message,
+            reply_markup=ReplyKeyboardMarkup(
+                self._destination_keyboard,
+                one_time_keyboard=True,
+                input_field_placeholder="Destination train station",
+                selective=True,
+            ),
+        )
 
     @check_authorized
     async def destination(
@@ -212,57 +231,62 @@ class Bot:
         Asks the user to choose at which station they should arrive
         """
         if update.message.text not in self.origin_stations:
-            await update.message.reply_text(
-                "Please select a valid station from the list",
-                reply_markup=ReplyKeyboardMarkup(
-                    self._origin_keyboard,
-                    one_time_keyboard=True,
-                    input_field_placeholder="Origin train station",
-                    selective=True,
-                ),
+            self._send_origin_message(
+                update, context, "Please select a valid station from the list"
             )
             return BotState.SELECT_ORIGIN
 
         context.user_data["origin"] = update.message.text
-        await update.message.reply_text(
-            "Where do you want to go?",
-            reply_markup=ReplyKeyboardMarkup(
-                self._destination_keyboard,
-                one_time_keyboard=True,
-                input_field_placeholder="Destination train station",
-                selective=True,
-            ),
+        await self._send_destination_message(
+            update, context, "Where do you want to go?"
         )
         return BotState.SELECT_DESTINATION
+
+    async def _send_min_date_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, message: str
+    ):
+        await update.message.reply_text(
+            message,
+            reply_markup=ForceReply(
+                selective=True, input_field_placeholder="yyyy-mm-dd HH:MM:SS"
+            ),
+        )
 
     @check_authorized
     async def min_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Asks the user to choose the earliest acceptable departure date
         """
-        error = None
         if update.message.text not in self.destination_stations:
-            error = "Please select a valid station from the list"
-        elif update.message.text == context.user_data["origin"]:
-            error = "Please selection a destination different from the origin station"
-
-        if error is not None:
-            await update.message.reply_text(
-                error,
-                reply_markup=ReplyKeyboardMarkup(
-                    self._destination_keyboard,
-                    one_time_keyboard=True,
-                    input_field_placeholder="Destination train station",
-                    selective=True,
-                ),
+            await self._send_destination_message(
+                update, context, "Please select a valid station from the list"
             )
             return BotState.SELECT_DESTINATION
-        else:
-            context.user_data["destination"] = update.message.text
-            await update.message.reply_text(
-                "When do you want to leave at the earliest? Date format: yyyy-mm-dd HH:MM:SS",
+        elif update.message.text == context.user_data["origin"]:
+            await self._send_destination_message(
+                update,
+                context,
+                "Please selection a destination different from the origin station",
             )
-            return BotState.SELECT_MIN_DATE
+            return BotState.SELECT_DESTINATION
+
+        context.user_data["destination"] = update.message.text
+        await self._send_min_date_message(
+            update,
+            context,
+            "When do you want to leave at the earliest? Date format: yyyy-mm-dd HH:MM:SS",
+        )
+        return BotState.SELECT_MIN_DATE
+
+    async def _send_max_date_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, message: str
+    ):
+        await update.message.reply_text(
+            message,
+            reply_markup=ForceReply(
+                selective=True, input_field_placeholder="yyyy-mm-dd HH:MM:SS"
+            ),
+        )
 
     @check_authorized
     async def max_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -272,15 +296,28 @@ class Bot:
         try:
             context.user_data["min_date"] = Trip.parse_date(update.message.text)
         except ValueError:
-            await update.message.reply_text(
+            logging.warning("Failed to parse min_date %s: %s", update.message.text, e)
+            await self._send_min_date_message(
+                update,
+                context,
                 "Please enter a valid date",
             )
             return BotState.SELECT_MIN_DATE
 
-        await update.message.reply_text(
+        await self._send_max_date_message(
+            update,
+            context,
             "When do you want to leave at the latest? Date format: yyyy-mm-dd HH:MM:SS",
         )
         return BotState.SELECT_MAX_DATE
+
+    async def _send_max_duration_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, message: str
+    ):
+        await update.message.reply_text(
+            message,
+            reply_markup=ForceReply(selective=True, input_field_placeholder="HH:MM"),
+        )
 
     @check_authorized
     async def max_duration(
@@ -292,7 +329,10 @@ class Bot:
         try:
             context.user_data["max_date"] = Trip.parse_date(update.message.text)
         except ValueError as e:
-            await update.message.reply_text(
+            logging.warning("Failed to parse max_date %s: %s", update.message.text, e)
+            await self._send_max_date_message(
+                update,
+                context,
                 "Please enter a valid date",
             )
             return BotState.SELECT_MAX_DATE
@@ -300,7 +340,9 @@ class Bot:
         min_date = context.user_data["min_date"]
         max_date = context.user_data["max_date"]
         if max_date < min_date:
-            await update.message.reply_text(
+            await self._send_max_date_message(
+                update,
+                context,
                 "Latest date must be after earliest date",
             )
             return BotState.SELECT_MAX_DATE
@@ -310,18 +352,24 @@ class Bot:
             or max_date.month != min_date.month
             or max_date.day != min_date.day
         ):
-            await update.message.reply_text(
+            await self._send_max_date_message(
+                update,
+                context,
                 "Because of technical limitations in the SNCF API, only same-day trips can be planned",
             )
             return BotState.SELECT_MAX_DATE
 
         if max_date < datetime.now():
-            await update.message.reply_text(
+            await self._send_max_date_message(
+                update,
+                context,
                 "Latest date cannot be in the past",
             )
             return BotState.SELECT_MAX_DATE
 
-        await update.message.reply_text(
+        await self._send_max_duration_message(
+            update,
+            context,
             "What is the maximum trip duration that you'll allow? Duration format: HH:MM",
         )
         return BotState.SELECT_MAX_DURATION
@@ -337,7 +385,12 @@ class Bot:
         try:
             context.user_data["max_duration"] = Trip.parse_duration(update.message.text)
         except ValueError as e:
-            await update.message.reply_text(
+            logging.warning(
+                "Failed to parse max_duration %s: %s", update.message.text, e
+            )
+            await self._send_max_duration_message(
+                update,
+                context,
                 "Please enter a valid duration",
             )
             return BotState.SELECT_MAX_DURATION
@@ -347,11 +400,13 @@ class Bot:
             self.backend.add_trip(context, trip)
             await update.message.reply_text(
                 f"Created {trip}.\nUse /start to list all your existing trips",
+                reply_markup=ReplyKeyboardRemove(),
             )
         except Exception as e:
             logging.warning("create_trip failed with data %s: %s", context.user_data, e)
             await update.message.reply_text(
                 "Sorry, trip creation failed, please try again",
+                reply_markup=ReplyKeyboardRemove(),
             )
 
         return ConversationHandler.END
@@ -384,7 +439,7 @@ class Bot:
             )
         except KeyError:
             await update.message.reply_text(
-                "You have no stored trips",
+                "You have no stored trips", reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
@@ -402,17 +457,17 @@ class Bot:
             trip = self.backend.get_trip(context, trip_id)
             self.backend.remove_trip(context, trip_id)
             await update.message.reply_text(
-                f"Deleted {trip}",
+                f"Deleted {trip}", reply_markup=ReplyKeyboardRemove()
             )
-        except KeyError:
+        except (KeyError, IndexError):
             await update.message.reply_text(
-                "Unknown trip, please try again",
+                "Unknown trip, aborting", reply_markup=ReplyKeyboardRemove()
             )
-            return BotState.SELECT_TRIP
         except Exception as e:
             logging.warning("delete_trip failed with data %s: %s", context.user_data, e)
             await update.message.reply_text(
-                "Sorry, trip deletion failed, please try again",
+                "Sorry, trip deletion failed, please try again later",
+                reply_markup=ReplyKeyboardRemove(),
             )
         return ConversationHandler.END
 
@@ -432,10 +487,10 @@ class Bot:
             for trip in trips:
                 msg += f"- {trip}"
 
-            await update.message.reply_text(msg)
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
         except KeyError:
             await update.message.reply_text(
-                "You have no stored trips",
+                "You have no stored trips", reply_markup=ReplyKeyboardRemove()
             )
         return ConversationHandler.END
 
