@@ -36,12 +36,14 @@ class BotProfile:
         allowed_user_ids: List[int],
         interval: int,
         silent: bool,
+        tgv_bot: TGVBot = None,
     ):
         self.name = name
         self.allowed_chat_ids = allowed_chat_ids
         self.allowed_user_ids = allowed_user_ids
         self.interval = interval
         self.silent = silent
+        self.tgv_bot = tgv_bot
 
     @staticmethod
     def from_config(name: str, config: dict) -> "BotProfile":
@@ -59,7 +61,13 @@ class Bot:
         self.init_stations()
         self.init_application(token)
         self.profiles = profiles
-        self.backend = TGVBot(self.application, 600)
+
+        for profile in profiles:
+            profile.tgv_bot = TGVBot(
+                application=self.application,
+                interval=profile.interval,
+                silent=profile.silent,
+            )
 
     def init_stations(self):
         # Get all available stations from the API
@@ -160,7 +168,7 @@ class Bot:
                 return profile
         return None
 
-    def check_authorized(func: Callable) -> bool:
+    def check_authorized(func: Callable) -> Callable:
         def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
             if self._get_profile(context) is not None:
                 return func(self, update, context)
@@ -168,6 +176,9 @@ class Bot:
                 return ConversationHandler.END
 
         return wrapper
+
+    def get_backend(self, context: ContextTypes.DEFAULT_TYPE) -> TGVBot:
+        return self._get_profile(context).tgv_bot
 
     @check_authorized
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -184,6 +195,7 @@ class Bot:
                 input_field_placeholder="Action",
                 selective=True,
             ),
+            disable_notification=True,
         )
         return BotState.SETUP
 
@@ -198,6 +210,7 @@ class Bot:
                 input_field_placeholder="Origin train station",
                 selective=True,
             ),
+            disable_notification=True,
         )
 
     @check_authorized
@@ -221,6 +234,7 @@ class Bot:
                 input_field_placeholder="Destination train station",
                 selective=True,
             ),
+            disable_notification=True,
         )
 
     @check_authorized
@@ -250,6 +264,7 @@ class Bot:
             reply_markup=ForceReply(
                 selective=True, input_field_placeholder="yyyy-mm-dd HH:MM:SS"
             ),
+            disable_notification=True,
         )
 
     @check_authorized
@@ -286,6 +301,7 @@ class Bot:
             reply_markup=ForceReply(
                 selective=True, input_field_placeholder="yyyy-mm-dd HH:MM:SS"
             ),
+            disable_notification=True,
         )
 
     @check_authorized
@@ -317,6 +333,7 @@ class Bot:
         await update.message.reply_text(
             message,
             reply_markup=ForceReply(selective=True, input_field_placeholder="HH:MM"),
+            disable_notification=True,
         )
 
     @check_authorized
@@ -397,16 +414,18 @@ class Bot:
 
         try:
             trip = Trip.from_config(context.user_data)
-            self.backend.add_trip(context, trip)
+            self.get_backend(context).add_trip(context, trip)
             await update.message.reply_text(
                 f"Created {trip}.\nUse /start to list all your existing trips",
                 reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
         except Exception as e:
             logging.warning("create_trip failed with data %s: %s", context.user_data, e)
             await update.message.reply_text(
                 "Sorry, trip creation failed, please try again",
                 reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
 
         return ConversationHandler.END
@@ -419,7 +438,7 @@ class Bot:
         Asks the user to choose the trip to delete
         """
         try:
-            trips = self.backend.get_trips(context)
+            trips = self.get_backend(context).get_trips(context)
             if not trips:
                 raise KeyError("No trips")
 
@@ -436,10 +455,13 @@ class Bot:
                     input_field_placeholder="Trip ID",
                     selective=True,
                 ),
+                disable_notification=True,
             )
         except KeyError:
             await update.message.reply_text(
-                "You have no stored trips", reply_markup=ReplyKeyboardRemove()
+                "You have no stored trips",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
             return ConversationHandler.END
 
@@ -454,20 +476,26 @@ class Bot:
         """
         try:
             trip_id = int(update.message.text)
-            trip = self.backend.get_trip(context, trip_id)
-            self.backend.remove_trip(context, trip_id)
+            backend = self.get_backend(context)
+            trip = backend.get_trip(context, trip_id)
+            backend.remove_trip(context, trip_id)
             await update.message.reply_text(
-                f"Deleted {trip}", reply_markup=ReplyKeyboardRemove()
+                f"Deleted {trip}",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
         except (KeyError, IndexError):
             await update.message.reply_text(
-                "Unknown trip, aborting", reply_markup=ReplyKeyboardRemove()
+                "Unknown trip, aborting",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
         except Exception as e:
             logging.warning("delete_trip failed with data %s: %s", context.user_data, e)
             await update.message.reply_text(
                 "Sorry, trip deletion failed, please try again later",
                 reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
         return ConversationHandler.END
 
@@ -479,7 +507,7 @@ class Bot:
         List a user's saved trips
         """
         try:
-            trips = self.backend.get_trips(context)
+            trips = self.get_backend(context).get_trips(context)
             if not trips:
                 raise KeyError("No trips")
 
@@ -487,10 +515,14 @@ class Bot:
             for trip in trips:
                 msg += f"\n- {trip}"
 
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text(
+                msg, reply_markup=ReplyKeyboardRemove(), disable_notification=True
+            )
         except KeyError:
             await update.message.reply_text(
-                "You have no stored trips", reply_markup=ReplyKeyboardRemove()
+                "You have no stored trips",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
             )
         return ConversationHandler.END
 
@@ -500,7 +532,9 @@ class Bot:
         Cancels and ends the conversation
         """
         await update.message.reply_text(
-            "Conversation canceled, see you later!", reply_markup=ReplyKeyboardRemove()
+            "Conversation canceled, see you later!",
+            reply_markup=ReplyKeyboardRemove(),
+            disable_notification=True,
         )
         return ConversationHandler.END
 
@@ -508,10 +542,14 @@ class Bot:
         """
         Sends a message containing the current chat's ID
         """
-        await update.message.reply_text(f"Current chat ID: {context._chat_id}")
+        await update.message.reply_text(
+            f"Current chat ID: {context._chat_id}", disable_notification=True
+        )
 
     async def get_user_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Sends a message containing the user's ID
         """
-        await update.message.reply_text(f"Current user ID: {context._user_id}")
+        await update.message.reply_text(
+            f"Current user ID: {context._user_id}", disable_notification=True
+        )

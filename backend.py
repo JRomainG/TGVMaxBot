@@ -200,6 +200,7 @@ class TGVBot(GenericBackend):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._notified_tickets = {}
+        self._silent = kwargs.get("silent", False)
 
     def get_available_tickets(self, trip: Trip):
         try:
@@ -224,7 +225,10 @@ class TGVBot(GenericBackend):
         msg = f"Found {len(tickets)} new option(s) for {trip}:\n"
         msg += "\n".join([f"- {t}" for t in tickets])
         await context.bot.send_message(
-            context.job.chat_id, text=msg, disable_web_page_preview=True
+            context.job.chat_id,
+            text=msg,
+            disable_web_page_preview=True,
+            disable_notification=self._silent,
         )
 
     def _update_notified_tickets(self, user_id: int, tickets: List[Ticket]):
